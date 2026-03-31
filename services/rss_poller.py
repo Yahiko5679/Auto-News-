@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 # ========================== DUB FILTER CONFIG ==========================
 # Change this list according to your needs
-ALLOWED_DUBS = ["Hindi", "English", "Russian"]   # Example: ["Hindi"] for only Hindi
+ALLOWED_DUBS = ["Hindi", "English", "Japanese"]   # Example: ["Hindi"] for only Hindi
 
 DUB_PATTERN = re.compile(
     r'\(\s*(' + '|'.join(ALLOWED_DUBS) + r')\s*Dub\s*\)', 
