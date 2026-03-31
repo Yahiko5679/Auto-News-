@@ -1,21 +1,20 @@
 """
 Admin Settings Panel — owner-only commands to configure the bot live.
-
 All settings are persisted in MongoDB and survive restarts.
 
 Commands:
-  /settings           — View all current settings
-  /set_interval <s>   — Set poll interval in seconds (min 30)
-  /set_max_rss <n>    — Set RSS feed limit
-  /set_max_channels   — Set channel limit
-  /toggle_preview     — Toggle web preview on/off
-  /set_footer <text>  — Set post footer text
-  /clear_footer       — Remove post footer
-  /add_admin <id>     — Add an admin (persisted in DB)
-  /rem_admin <id>     — Remove an admin (persisted in DB)
-  /list_admins        — List all admins
-  /clear_seen         — Clear dedup cache
-  /reset_stats        — Reset publish counter
+  /settings           — View all current settings  (admin)
+  /set_interval <s>   — Set poll interval in seconds, min 30  (owner)
+  /set_max_rss <n>    — Set RSS feed limit  (owner)
+  /set_max_channels   — Set channel limit  (owner)
+  /toggle_preview     — Toggle web link preview on/off  (owner)
+  /set_footer <text>  — Set a footer line on every post  (owner)
+  /clear_footer       — Remove the footer  (owner)
+  /add_admin <id>     — Add an admin, persisted in DB  (owner)
+  /rem_admin <id>     — Remove an admin  (owner)
+  /list_admins        — List all current admins  (admin)
+  /clear_seen         — Wipe dedup cache  (owner)
+  /reset_stats        — Reset publish counter  (owner)
 """
 
 import logging
@@ -24,7 +23,6 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 
 from utils.auth import admin_only, owner_only
-from utils.formatting import fmt_dt
 
 logger = logging.getLogger(__name__)
 
@@ -34,16 +32,15 @@ logger = logging.getLogger(__name__)
 @Client.on_message(filters.command("settings"))
 @admin_only
 async def cmd_settings(client: Client, msg: Message):
-    db   = client.db
-    cfg  = client.cfg
-    s    = await db.get_settings()
-    extra_admins = s.get("extra_admins", [])
+    db  = client.db
+    cfg = client.cfg
+    s   = await db.get_settings()
 
     preview_status = "🔴 Off" if s["disable_web_preview"] else "🟢 On"
     footer_preview = f"`{s['post_footer']}`" if s["post_footer"] else "_none_"
-    admins_list    = ", ".join(f"`{uid}`" for uid in cfg.ADMINS) if cfg.ADMINS else "—"
+    admins_list    = ", ".join(f"`{uid}`" for uid in cfg.ADMINS)
 
-    text = (
+    await msg.reply(
         f"⚙️ **Bot Settings**\n\n"
         f"**‹ Polling ›**\n"
         f"🔄 Poll Interval: `{s['poll_interval']}s`\n\n"
@@ -56,10 +53,8 @@ async def cmd_settings(client: Client, msg: Message):
         f"**‹ Admins ›**\n"
         f"👑 Owner: `{cfg.ADMINS[0]}`\n"
         f"🛡 All Admins: {admins_list}\n\n"
-        f"_Use owner commands to change any setting._\n"
-        f"_Type /help for command list._"
+        f"_Type /help for full command list._"
     )
-    await msg.reply(text)
 
 
 # ── Poll interval ─────────────────────────────────────────────────────────────
@@ -67,14 +62,13 @@ async def cmd_settings(client: Client, msg: Message):
 @Client.on_message(filters.command("set_interval"))
 @owner_only
 async def cmd_set_interval(client: Client, msg: Message):
-    db    = client.db
     parts = msg.text.split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip().isdigit():
         await msg.reply("⚠️ **Usage:** `/set_interval <seconds>` (min 30)\n\nExample: `/set_interval 180`")
         return
 
     val = max(30, int(parts[1].strip()))
-    await db.set_setting("poll_interval", val)
+    await client.db.set_setting("poll_interval", val)
     client.cfg.update_poll_interval(val)
     await msg.reply(f"✅ Poll interval set to **{val}s**.\nTakes effect after the current cycle.")
 
@@ -84,14 +78,13 @@ async def cmd_set_interval(client: Client, msg: Message):
 @Client.on_message(filters.command("set_max_rss"))
 @owner_only
 async def cmd_set_max_rss(client: Client, msg: Message):
-    db    = client.db
     parts = msg.text.split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip().isdigit():
         await msg.reply("⚠️ **Usage:** `/set_max_rss <number>`\n\nExample: `/set_max_rss 50`")
         return
 
     val = max(1, int(parts[1].strip()))
-    await db.set_setting("max_rss", val)
+    await client.db.set_setting("max_rss", val)
     client.cfg.update_max_rss(val)
     await msg.reply(f"✅ Max RSS feeds set to **{val}**.")
 
@@ -101,14 +94,13 @@ async def cmd_set_max_rss(client: Client, msg: Message):
 @Client.on_message(filters.command("set_max_channels"))
 @owner_only
 async def cmd_set_max_channels(client: Client, msg: Message):
-    db    = client.db
     parts = msg.text.split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip().isdigit():
         await msg.reply("⚠️ **Usage:** `/set_max_channels <number>`\n\nExample: `/set_max_channels 20`")
         return
 
     val = max(1, int(parts[1].strip()))
-    await db.set_setting("max_channels", val)
+    await client.db.set_setting("max_channels", val)
     client.cfg.update_max_channels(val)
     await msg.reply(f"✅ Max channels set to **{val}**.")
 
@@ -118,10 +110,9 @@ async def cmd_set_max_channels(client: Client, msg: Message):
 @Client.on_message(filters.command("toggle_preview"))
 @owner_only
 async def cmd_toggle_preview(client: Client, msg: Message):
-    db          = client.db
-    current     = await db.get_setting("disable_web_preview", False)
-    new_val     = not current
-    await db.set_setting("disable_web_preview", new_val)
+    current = await client.db.get_setting("disable_web_preview", False)
+    new_val = not current
+    await client.db.set_setting("disable_web_preview", new_val)
     client.cfg.DISABLE_WEB_PREVIEW = new_val
     status = "🔴 **disabled**" if new_val else "🟢 **enabled**"
     await msg.reply(f"Web preview is now {status} for all published posts.")
@@ -132,14 +123,13 @@ async def cmd_toggle_preview(client: Client, msg: Message):
 @Client.on_message(filters.command("set_footer"))
 @owner_only
 async def cmd_set_footer(client: Client, msg: Message):
-    db    = client.db
     parts = msg.text.split(maxsplit=1)
     if len(parts) < 2:
         await msg.reply("⚠️ **Usage:** `/set_footer <text>`\n\nExample: `/set_footer 📢 @MyAnimeChannel`")
         return
 
     footer = parts[1].strip()
-    await db.set_setting("post_footer", footer)
+    await client.db.set_setting("post_footer", footer)
     client.cfg.set_post_footer(footer)
     await msg.reply(f"✅ Footer set:\n{footer}")
 
@@ -147,8 +137,7 @@ async def cmd_set_footer(client: Client, msg: Message):
 @Client.on_message(filters.command("clear_footer"))
 @owner_only
 async def cmd_clear_footer(client: Client, msg: Message):
-    db = client.db
-    await db.set_setting("post_footer", "")
+    await client.db.set_setting("post_footer", "")
     client.cfg.set_post_footer("")
     await msg.reply("✅ Footer cleared.")
 
@@ -158,7 +147,6 @@ async def cmd_clear_footer(client: Client, msg: Message):
 @Client.on_message(filters.command("add_admin"))
 @owner_only
 async def cmd_add_admin(client: Client, msg: Message):
-    db    = client.db
     cfg   = client.cfg
     parts = msg.text.split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip().lstrip("-").isdigit():
@@ -170,11 +158,11 @@ async def cmd_add_admin(client: Client, msg: Message):
         await msg.reply("ℹ️ That's the owner — already has full access.")
         return
 
-    added_db  = await db.add_extra_admin(uid)
+    added_db  = await client.db.add_extra_admin(uid)
     added_cfg = cfg.add_admin(uid)
 
     if added_db or added_cfg:
-        await msg.reply(f"✅ Admin added: `{uid}`\nThey now have access to all admin commands.")
+        await msg.reply(f"✅ Admin added: `{uid}`")
     else:
         await msg.reply(f"ℹ️ `{uid}` is already an admin.")
 
@@ -182,7 +170,6 @@ async def cmd_add_admin(client: Client, msg: Message):
 @Client.on_message(filters.command("rem_admin"))
 @owner_only
 async def cmd_rem_admin(client: Client, msg: Message):
-    db    = client.db
     cfg   = client.cfg
     parts = msg.text.split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip().lstrip("-").isdigit():
@@ -191,10 +178,10 @@ async def cmd_rem_admin(client: Client, msg: Message):
 
     uid = int(parts[1].strip())
     if uid == cfg.ADMINS[0]:
-        await msg.reply("🚫 Cannot remove the owner from admins.")
+        await msg.reply("🚫 Cannot remove the owner.")
         return
 
-    rem_db  = await db.remove_extra_admin(uid)
+    rem_db  = await client.db.remove_extra_admin(uid)
     rem_cfg = cfg.remove_admin(uid)
 
     if rem_db or rem_cfg:
@@ -206,13 +193,11 @@ async def cmd_rem_admin(client: Client, msg: Message):
 @Client.on_message(filters.command("list_admins"))
 @admin_only
 async def cmd_list_admins(client: Client, msg: Message):
-    cfg = client.cfg
-
+    cfg   = client.cfg
     lines = [f"🛡 **Admins** `({len(cfg.ADMINS)})`\n"]
     for i, uid in enumerate(cfg.ADMINS):
         tag = "👑 Owner" if i == 0 else "🛡 Admin"
         lines.append(f"**{i+1}.** `{uid}` — {tag}")
-
     await msg.reply("\n".join(lines))
 
 
@@ -221,12 +206,10 @@ async def cmd_list_admins(client: Client, msg: Message):
 @Client.on_message(filters.command("clear_seen"))
 @owner_only
 async def cmd_clear_seen(client: Client, msg: Message):
-    db      = client.db
     wait    = await msg.reply("⏳ Clearing dedup cache…")
-    deleted = await db.clear_seen()
+    deleted = await client.db.clear_seen()
     await wait.edit(
-        f"✅ Dedup cache cleared.\n"
-        f"Removed `{deleted}` entries.\n\n"
+        f"✅ Dedup cache cleared. Removed `{deleted}` entries.\n\n"
         f"⚠️ _Next poll may re-publish recent articles._"
     )
 
@@ -234,6 +217,5 @@ async def cmd_clear_seen(client: Client, msg: Message):
 @Client.on_message(filters.command("reset_stats"))
 @owner_only
 async def cmd_reset_stats(client: Client, msg: Message):
-    db = client.db
-    await db.reset_stats()
-    await msg.reply("✅ Publish stats have been reset to zero.")
+    await client.db.reset_stats()
+    await msg.reply("✅ Publish stats reset to zero.")
