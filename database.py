@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 # ── Default RSS feeds seeded on first run ─────────────────────────────────────
 DEFAULT_FEEDS = [
     {
-        "url": "https://www.crunchyroll.com/newsrss?lang=enUS",
+        "url": "https://feeds.feedburner.com/crunchyroll/rss",
         "name": "Crunchyroll News",
     },
     {
