@@ -163,14 +163,6 @@ class CosmicBotz:
     async def get_active_rss(self) -> List[Dict]:
         return await self.rss.find({"active": True}).to_list(None)
 
-    async def toggle_rss_active(self, url: str) -> Optional[bool]:
-        doc = await self.rss.find_one({"_id": url})
-        if not doc:
-            return None
-        new_state = not doc.get("active", True)
-        await self.rss.update_one({"_id": url}, {"$set": {"active": new_state}})
-        return new_state
-
     async def rss_exists(self, url: str) -> bool:
         return bool(await self.rss.find_one({"_id": url}))
 
