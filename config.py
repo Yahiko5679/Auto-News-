@@ -45,7 +45,7 @@ class Config:
         self.POST_FOOTER: str          = os.getenv("POST_FOOTER", "")
 
         # ── ADMINS list — owner is always index 0 ─────────────────────────────
-        extra = _parse_ids(os.getenv("EXTRA_ADMINS", ""))
+        extra = _parse_ids(os.getenv("ADMINS", ""))
         self.ADMINS: List[int] = [owner_id] + [uid for uid in extra if uid != owner_id]
 
         logger.info(f"✅ Config loaded. Owner (Admins[0]): {self.ADMINS[0]} | All admins: {self.ADMINS}")
