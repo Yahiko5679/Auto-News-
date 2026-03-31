@@ -6,10 +6,11 @@ CosmicBotz.seen, formats and publishes to all registered channels.
 
 Key behaviours:
  - start() / stop() properly manage the asyncio Task
- - Poll interval is re-read from DB each cycle (live /set_interval takes effect)
+ - Poll interval is re-read from DB each cycle
  - post_footer and disable_web_preview are read from DB each cycle
- - Per-feed consecutive error counter with backoff logging (not spammy)
- - 0.5s delay between channel sends to respect Telegram rate limits
+ - Per-feed consecutive error counter with backoff logging
+ - Dub filtering (only specific language dubs)
+ - Enhanced error handling & robustness
 """
 
 from __future__ import annotations
@@ -28,6 +29,15 @@ from config import Config
 from database import CosmicBotz
 
 logger = logging.getLogger(__name__)
+
+# ========================== DUB FILTER CONFIG ==========================
+# Change this list according to your needs
+ALLOWED_DUBS = ["Hindi", "English", "Russian"]   # Example: ["Hindi"] for only Hindi
+
+DUB_PATTERN = re.compile(
+    r'\(\s*(' + '|'.join(ALLOWED_DUBS) + r')\s*Dub\s*\)', 
+    re.IGNORECASE
+)
 
 EMOJI_MAP = {
     "anime":   "🎌",
@@ -73,6 +83,16 @@ def _guid(entry: Dict, feed_url: str) -> str:
     return hashlib.sha1(f"{feed_url}:{raw}".encode()).hexdigest()
 
 
+def _is_desired_dub(entry: Dict) -> bool:
+    """Return True only if entry contains allowed dub language."""
+    title = entry.get("title", "") or ""
+    summary = entry.get("summary", "") or entry.get("description", "")
+
+    if DUB_PATTERN.search(title) or DUB_PATTERN.search(summary):
+        return True
+    return False
+
+
 def _format(entry: Dict, feed_name: str, footer: str = "") -> str:
     title   = entry.get("title", "No Title").strip()
     link    = entry.get("link", "")
@@ -104,17 +124,16 @@ class RSSPoller:
         self._feed_errors: Dict[str, int]  = {}
 
     def start(self):
-        """Schedule the poller loop as a background asyncio Task."""
         self._task = asyncio.create_task(self._run())
 
     def stop(self):
-        """Cancel the background Task cleanly."""
         if self._task and not self._task.done():
             self._task.cancel()
 
     async def _run(self):
         interval = await self._db.get_setting("poll_interval", self._cfg.POLL_INTERVAL)
-        logger.info(f"📡 RSS Poller started — interval {interval}s")
+        logger.info(f"📡 RSS Poller started — interval {interval}s | Allowed Dubs: {ALLOWED_DUBS}")
+
         while True:
             try:
                 await self.poll_once()
@@ -123,12 +142,11 @@ class RSSPoller:
                 break
             except Exception as e:
                 logger.error(f"Poller loop error: {e}", exc_info=True)
-            # Re-read interval so /set_interval takes effect without restart
+
             interval = await self._db.get_setting("poll_interval", self._cfg.POLL_INTERVAL)
             await asyncio.sleep(interval)
 
     async def poll_once(self):
-        """Run a single full poll cycle. Called by both _run() and /force_poll."""
         feeds    = await self._db.get_active_rss()
         channels = await self._db.get_all_channels()
 
@@ -140,8 +158,11 @@ class RSSPoller:
         footer          = await self._db.get_setting("post_footer", "")
 
         async with aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=15),
-            headers={"User-Agent": "AnimeNewsBot/2.0 PyroFork"},
+            timeout=aiohttp.ClientTimeout(total=20),
+            headers={
+                "User-Agent": "AnimeNewsBot/2.1 PyroFork (+https://t.me/YourBot)",
+                "Accept": "application/rss+xml, application/xml, text/xml, */*"
+            },
         ) as session:
             for feed in feeds:
                 await self._process_feed(feed, channel_ids, session, disable_preview, footer)
@@ -162,44 +183,70 @@ class RSSPoller:
                 if resp.status != 200:
                     self._log_feed_error(url, f"HTTP {resp.status}")
                     return
+
                 content = await resp.read()
-            self._feed_errors[url] = 0  # reset on success
+
+            # Reset error counter on success
+            self._feed_errors[url] = 0
+
+        except asyncio.TimeoutError:
+            self._log_feed_error(url, "Request timeout")
+            return
+        except aiohttp.ClientError as e:
+            self._log_feed_error(url, f"Client error: {e}")
+            return
         except Exception as e:
-            self._log_feed_error(url, str(e))
+            self._log_feed_error(url, f"Unexpected error: {e}")
             return
 
-        entries = feedparser.parse(content).get("entries", [])
-        new     = 0
+        # Parse RSS
+        try:
+            parsed_feed = feedparser.parse(content)
+            entries = parsed_feed.get("entries", [])
+            
+            if parsed_feed.get("bozo"):  # feedparser error flag
+                logger.warning(f"Malformed feed [{url}]: {parsed_feed.bozo_exception}")
+        except Exception as e:
+            self._log_feed_error(url, f"Feedparser failed: {e}")
+            return
 
+        new = 0
         for entry in reversed(entries):  # oldest first
             guid = _guid(entry, url)
             if await self._db.is_seen(guid):
                 continue
 
-            text      = _format(entry, name, footer)
+            # === DUB FILTER ===
+            if not _is_desired_dub(entry):
+                continue
+
+            text = _format(entry, name, footer)
             published = False
 
             for ch_id in channel_ids:
                 try:
                     await self._client.send_message(
-                        ch_id, text,
+                        ch_id, 
+                        text,
                         disable_web_page_preview=disable_preview,
                     )
                     published = True
                 except Exception as e:
-                    logger.warning(f"Send to {ch_id} failed: {e}")
+                    logger.warning(f"Failed to send to {ch_id}: {e}")
 
             await self._db.mark_seen(guid)
             if published:
                 new += 1
-            await asyncio.sleep(0.5)
+
+            await asyncio.sleep(0.5)   # Respect Telegram rate limits
 
         if new:
             await self._db.increment_published(new)
-            logger.info(f"📨 {new} new article(s) from '{name}'")
+            logger.info(f"📨 {new} new dub post(s) from '{name}'")
 
     def _log_feed_error(self, url: str, reason: str):
         count = self._feed_errors.get(url, 0) + 1
         self._feed_errors[url] = count
-        if count in (1, 3, 10) or count % 10 == 0:
+
+        if count in (1, 3, 5, 10) or count % 15 == 0:
             logger.warning(f"Feed error [{url}] (×{count}): {reason}")
