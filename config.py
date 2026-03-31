@@ -2,64 +2,58 @@
 Config — loaded entirely from environment variables.
 No credentials are hardcoded anywhere.
 
-ADMINS list:  The first entry is always the OWNER (Admins[0]).
-              EXTRA_ADMINS are appended after.
-              All permissions use the ADMINS list.
+ADMINS list:
+  ADMINS[0]  = Owner — set via OWNER_ID env var. Cannot be removed.
+  ADMINS[1+] = Extra admins — from EXTRA_ADMINS env or added via /add_admin.
+
+All permission checks use ADMINS. OWNER_ID is read once from env to seed
+ADMINS[0] and is not stored as a separate attribute.
 """
 
 import os
 import sys
 import logging
-from dataclasses import dataclass, field
 from typing import List
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
 class Config:
-    # ── Required ─────────────────────────────────────────────────────────────
-    BOT_TOKEN: str  = field(default_factory=lambda: _require("BOT_TOKEN"))
-    API_ID: int     = field(default_factory=lambda: int(_require("API_ID")))
-    API_HASH: str   = field(default_factory=lambda: _require("API_HASH"))
-    MONGO_URI: str  = field(default_factory=lambda: _require("MONGO_URI"))
-    OWNER_ID: int   = field(default_factory=lambda: int(_require("OWNER_ID")))
+    def __init__(self):
+        # ── Required ──────────────────────────────────────────────────────────
+        self.BOT_TOKEN: str = _require("BOT_TOKEN")
+        self.API_ID: int    = int(_require("API_ID"))
+        self.API_HASH: str  = _require("API_HASH")
+        self.MONGO_URI: str = _require("MONGO_URI")
 
-    # ── Optional ─────────────────────────────────────────────────────────────
-    DB_NAME: str        = field(default_factory=lambda: os.getenv("DB_NAME", "anime_news_bot"))
-    POLL_INTERVAL: int  = field(default_factory=lambda: int(os.getenv("POLL_INTERVAL", "300")))
-    MAX_RSS: int        = field(default_factory=lambda: int(os.getenv("MAX_RSS", "25")))
-    MAX_CHANNELS: int   = field(default_factory=lambda: int(os.getenv("MAX_CHANNELS", "10")))
+        # Owner is always ADMINS[0]. OWNER_ID is only used here to seed the list.
+        owner_id = int(_require("OWNER_ID"))
 
-    # Extra admins: comma-separated Telegram user IDs
-    EXTRA_ADMINS: List[int] = field(
-        default_factory=lambda: _parse_ids(os.getenv("EXTRA_ADMINS", ""))
-    )
+        # ── Optional ──────────────────────────────────────────────────────────
+        self.DB_NAME: str        = os.getenv("DB_NAME", "anime_news_bot")
+        self.POLL_INTERVAL: int  = int(os.getenv("POLL_INTERVAL", "300"))
+        self.MAX_RSS: int        = int(os.getenv("MAX_RSS", "25"))
+        self.MAX_CHANNELS: int   = int(os.getenv("MAX_CHANNELS", "10"))
 
-    # ── Webhook ───────────────────────────────────────────────────────────────
-    WEBHOOK: bool     = field(default_factory=lambda: os.getenv("WEBHOOK", "false").lower() == "true")
-    WEBHOOK_HOST: str = field(default_factory=lambda: os.getenv("WEBHOOK_HOST", "0.0.0.0"))
-    WEBHOOK_PORT: int = field(default_factory=lambda: int(os.getenv("PORT", "8080")))
+        # ── Webhook ───────────────────────────────────────────────────────────
+        self.WEBHOOK: bool      = os.getenv("WEBHOOK", "false").lower() == "true"
+        self.WEBHOOK_HOST: str  = os.getenv("WEBHOOK_HOST", "0.0.0.0")
+        self.WEBHOOK_PORT: int  = int(os.getenv("PORT", "8080"))
 
-    # ── Post format ───────────────────────────────────────────────────────────
-    DISABLE_WEB_PREVIEW: bool = field(
-        default_factory=lambda: os.getenv("DISABLE_WEB_PREVIEW", "false").lower() == "true"
-    )
-    POST_FOOTER: str = field(default_factory=lambda: os.getenv("POST_FOOTER", ""))
+        # ── Post format ───────────────────────────────────────────────────────
+        self.DISABLE_WEB_PREVIEW: bool = os.getenv("DISABLE_WEB_PREVIEW", "false").lower() == "true"
+        self.POST_FOOTER: str          = os.getenv("POST_FOOTER", "")
 
-    def __post_init__(self):
-        # Build the unified ADMINS list: owner is always Admins[0]
-        admins = [self.OWNER_ID]
-        for uid in self.EXTRA_ADMINS:
-            if uid != self.OWNER_ID:
-                admins.append(uid)
-        self.ADMINS: List[int] = admins
-        logger.info(f"✅ Config loaded. Owner: {self.OWNER_ID} | Admins: {self.ADMINS}")
+        # ── ADMINS list — owner is always index 0 ─────────────────────────────
+        extra = _parse_ids(os.getenv("EXTRA_ADMINS", ""))
+        self.ADMINS: List[int] = [owner_id] + [uid for uid in extra if uid != owner_id]
+
+        logger.info(f"✅ Config loaded. Owner (Admins[0]): {self.ADMINS[0]} | All admins: {self.ADMINS}")
 
     # ── Permission helpers ────────────────────────────────────────────────────
 
     def is_owner(self, user_id: int) -> bool:
-        """True only for the bot owner (Admins[0])."""
+        """True only for ADMINS[0]."""
         return user_id == self.ADMINS[0]
 
     def is_admin(self, user_id: int) -> bool:
@@ -67,20 +61,22 @@ class Config:
         return user_id in self.ADMINS
 
     def add_admin(self, user_id: int) -> bool:
-        """Dynamically add an admin at runtime (not persisted across restarts)."""
+        """Add an admin to the live list. Owner cannot be re-added."""
         if user_id not in self.ADMINS:
             self.ADMINS.append(user_id)
             return True
         return False
 
     def remove_admin(self, user_id: int) -> bool:
-        """Remove an admin. Owner (Admins[0]) can never be removed."""
+        """Remove an admin. ADMINS[0] (owner) can never be removed."""
         if user_id == self.ADMINS[0]:
-            return False  # can't remove owner
+            return False
         if user_id in self.ADMINS:
             self.ADMINS.remove(user_id)
             return True
         return False
+
+    # ── Live setting updaters (called by /set_* handlers) ────────────────────
 
     def update_poll_interval(self, seconds: int):
         self.POLL_INTERVAL = max(30, seconds)
@@ -90,10 +86,6 @@ class Config:
 
     def update_max_channels(self, n: int):
         self.MAX_CHANNELS = max(1, n)
-
-    def toggle_web_preview(self) -> bool:
-        self.DISABLE_WEB_PREVIEW = not self.DISABLE_WEB_PREVIEW
-        return self.DISABLE_WEB_PREVIEW
 
     def set_post_footer(self, text: str):
         self.POST_FOOTER = text.strip()
